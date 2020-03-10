@@ -24,23 +24,20 @@ function construct_event_chains(configfile::String)
     links = DataFrame(CSV.File(cfg.links_table; types=types))
     select!(links, Not(:CriteriaId))  # Drop CriteriaId column
 
-    @info "$(now()) Initialising the event_chains table"
-    # Append columns: DateTime, EventTag, ChainId
-    lowerbound = cfg.time_window.lowerbound
-    upperbound = cfg.time_window.upperbound
-    entityid2chainid2dttm = augment_links!(links, cfg)  # EntityId => ChainId => DateTime
-    oldchainid2newchainid = merge_chains(entityid2chainid2dttm, lowerbound, upperbound)  # oldChainId => newChainId. Merge chains if they overlap.
+    @info "$(now()) Appending DateTime and EventTag to links table"
+    append_tag_and_dttm!(links, cfg)
 
-    @info "$(now()) Constructing event chains"
-    # Include events in chains if they satisfy inclusion criteria
-    chainid2chainname = augment_chains!(links, entityid2chainid2dttm, oldchainid2newchainid, lowerbound, upperbound)
+    @info "$(now()) Appending ChainId to links table"
+    chainid2name_duration = append_chainid!(links, cfg)  # chainid => (name, duration)
+
+    @info "$(now()) Constructing event chain definitions"
+    x = sort!([(ChainId=k, ChainName=v[1], ChainDuration=v[2]) for (k,v) in chainid2name_duration], by=(x) -> x.ChainId)
 
     @info "$(now()) Exporting event chain definitions"
-    x = sort!([(ChainId=k, ChainName=v) for (k,v) in chainid2chainname], by=(x) -> x.ChainId)
     CSV.write(joinpath(outdir, "output", "event_chain_definitions.tsv"), x)
 
     @info "$(now()) Exporting event chains"
-    x = view(links, links[!, :ChainId] .> 0, [:ChainId, :EventId])
+    x = view(links, :, [:ChainId, :EventId])
     CSV.write(joinpath(outdir, "output", "event_chains.tsv"), x)
 
     @info "$(now()) Finished constructing event chains. Results are stored at:\n    $(outdir)"
@@ -50,7 +47,9 @@ end
 ################################################################################
 # Config
 
-struct ChainsConfig
+const registered_units = Dict("day" => Day)
+
+struct ChainsConfig{T <: Period}
     projectname::String
     description::String
     output_directory::String
@@ -58,8 +57,7 @@ struct ChainsConfig
     event_tables::Dict{String, String}  # tablename => filename
     tags::Dict{String, Symbol}          # tablename => colname
     timestamps::Dict{String, Symbol}    # tablename => colname
-    tag_of_interest::Dict{String, String}  # keys: tablename, column, value
-    time_window::Dict{Symbol, Any}      # keys: unit, lowerbound, upperbound
+    max_time_between_events::T          # Example: Day(30)
 end
 
 function ChainsConfig(configfile::String)
@@ -67,8 +65,6 @@ function ChainsConfig(configfile::String)
     d = YAML.load_file(configfile)
     ChainsConfig(d)
 end
-
-const registered_units = Dict("day" => Day)
 
 function ChainsConfig(d::Dict)
     projectname  = d["projectname"]
@@ -81,29 +77,23 @@ function ChainsConfig(d::Dict)
     event_tables = d["event_tables"]
     tags         = Dict{String, Symbol}(tablename => Symbol(tag) for (tablename,tag) in d["tags"])
     timestamps   = Dict{String, Symbol}(tablename => Symbol(tag) for (tablename,tag) in d["timestamps"])
-    tag_of_interest = d["criteria"]["tag_of_interest"]
-    tw    = d["criteria"]["time_window"]  # Example: "-7 to 30 days"
-    tw    = split(tw, " ")
-    lb    = parse(Int, tw[1])
-    ub    = parse(Int, tw[3])
-    units = registered_units[tw[4][1:3]]
-    timewindow = Dict{Symbol, Any}(:unit => units, :lowerbound => units(lb), :upperbound => units(ub))
-    ChainsConfig(projectname, description, outdir, links_table, event_tables, tags, timestamps, tag_of_interest, timewindow)
+    gap    = d["criteria"]["time_window"]  # Example: "30 days"
+    idx    = findfirst(==(" "), gap)
+    isnothing(idx) && error("Max time between events is mis-specified. Format should be \"\$n \$units\". E.g., \"30 days\".")
+    T = registered_units[lowercase(gap[(idx+1):(idx+3)])]
+    n = parse(Int, gap[1:(idx-1)])
+    maxgap = T(n)  # Example: Day(30)
+    n <= 0 && error("The maximum time between events must be greater than 0 $(T)s.")
+    ChainsConfig(projectname, description, outdir, links_table, event_tables, tags, timestamps, maxgap)
 end
 
 ################################################################################
 
-function augment_links!(links::DataFrame, cfg::ChainsConfig)
-    result = Dict{UInt, Dict{Int, DateTime}}()  # EntityId => ChainId => DateTime
-    n      = size(links, 1)
+function append_tag_and_dttm!(links::DataFrame, cfg::ChainsConfig)
+    n = size(links, 1)
     links[!, :DateTime] = missings(DateTime, n)
     links[!, :EventTag] = missings(String,   n)
-    links[!, :ChainId]  = missings(Int,      n)
-    chainid             = 0
-    tablename           = ""
-    eventid2dttm_tag    = ""  # EventId => (datetime, tag)
-    table_of_interest   = cfg.tag_of_interest["tablename"]
-    tag_of_interest     = cfg.tag_of_interest["value"]
+    tablename = ""
     for i = 1:n
         # Update table if necessary
         new_tablename = links[i, :TableName]
@@ -116,17 +106,43 @@ function augment_links!(links::DataFrame, cfg::ChainsConfig)
         dttm, tag = eventid2dttm_tag[links[i, :EventId]]
         links[i, :DateTime] = dttm
         links[i, :EventTag] = tag
-        if tablename == table_of_interest && tag == tag_of_interest
-            chainid += 1
-            links[i, :ChainId] = chainid
-        end
+    end
+end
 
-        # Populate result
+function append_chainid!(links, cfg)
+    result = Dict{UInt, Tuple{String, Int}}()  # chainid => (name, duration)
+    sort!(links, (:EntityId, :DateTime))
+    n = size(links, 1)
+    links[!, :ChainId]       = missings(UInt, n)
+    links[!, :ChainDuration] = missings(Int,  n)
+    chainid       = UInt(0)
+    prev_entityid = UInt(0)
+    for i = 1:n
         entityid = links[i, :EntityId]
-        if !haskey(result, entityid)
-            result[entityid] = Dict{Int, DateTime}()
+        eventtag = "$(links[i, :TableName]).$(links[i, :EventTag])"
+        if entityid != prev_entityid  # First event for this entity...start a new chain
+            prev_entityid = entityid
+            chainid += 1
+            result[chainid]    = (eventtag, 0)
+            links[i, :ChainId] = chainid
+        else
+            dttm = links[i, :DateTime]
+            dttm_prev = links[i - 1, :DateTime]
+            gap = dttm - dttm_prev  # gap isa T <: Period
+            gap = gap.value         # gap isa Int
+            if gap <= maxgap  # Event is in the same chain as the previous row
+                cid = links[i - 1, :ChainId]
+                nm, dur = result[cid]
+                nm      = "$(nm) -> $(eventtag)"
+                dur    += gap
+                links[i, :ChainId] = cid
+                result[cid] = (nm, dur)
+            else              # Event is the start of a new chain
+                chainid += 1
+                result[chainid]    = (eventtag, 0)
+                links[i, :ChainId] = chainid
+            end
         end
-        result[entityid][chainid] = dttm
     end
     result
 end
@@ -142,55 +158,6 @@ function construct_eventid2dttm_tag(cfg, tablename::String)
         result[eventid] = (dttm, tag)
     end
     result
-end
-
-function merge_chains(entityid2chainid2dttm, lowerbound, upperbound)
-    result = Dict{Int, Int}()  # oldChainId => newChainId. Merge chains if they overlap.
-    for (entityid, chainid2dttm) in entityid2chainid2dttm
-        for (oldchainid, dttm) in chainid2dttm
-            newchainid = get_chainid(result, dttm, lowerbound, upperbound)
-            result[oldchainid] = newchainid == 0 ? oldchainid : newchainid
-        end
-    end
-    for (oldchainid, newchainid) in result
-        oldchainid != newchainid && continue
-        delete!(result, oldchainid)
-    end
-    result
-end
-
-function augment_chains!(links, entityid2chainid2dttm, oldchainid2newchainid, lowerbound, upperbound)
-    result = Dict{Int, String}()  # ChainId => ChainName
-    sort!(links, (:EntityId, :DateTime))
-    n = size(links, 1)
-    for i = 1:n
-        entityid = links[i, :EntityId]
-        !haskey(entityid2chainid2dttm, entityid) && continue  # Entity has no chains of interest
-        chainid = links[i, :ChainId]
-        chainid2dttm = entityid2chainid2dttm[entityid] 
-        chainid = ismissing(chainid) ? get_chainid(chainid2dttm, links[i, :DateTime], lowerbound, upperbound) : chainid
-        chainid == 0 && continue  # The event is not part of any chain
-        chainid = haskey(oldchainid2newchainid, chainid) ? oldchainid2newchainid[chainid] : chainid
-        links[i, :ChainId] = chainid
-        event_tag = "$(links[i, :TableName]).$(links[i, :EventTag])"  # tablename.tag
-        result[chainid] = haskey(result, chainid) ? "$(result[chainid]) -> $(event_tag)" : event_tag
-    end
-    result
-end
-
-"""
-Returns the first ChainId encountered for which ts-lowerbound <= dttm <= ts+upperbound,
-where ts is the timestamp of the event of interest in the chain.
-
-If no such chain exists the function returns 0.
-"""
-function get_chainid(chainid2dttm::Dict{Int, DateTime}, dttm::DateTime, lowerbound::T, upperbound::T) where {T <: Period}
-    for (chainid, ts) in chain2dttm
-        dttm < ts - lowerbound && continue
-        dttm > ts + upperbound && continue
-        return chainid
-    end
-    0
 end
 
 end
