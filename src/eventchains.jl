@@ -179,7 +179,8 @@ function construct_event_chain_definitions(chainid2name_duration, T)
     n = length(chainid2name_duration)
     i = 0
     result = DataFrame(ChainId=Vector{UInt}(undef, n), ChainName=Vector{String}(undef, n))
-    durcol = Symbol("duration_$(lowercase("$(T)"))s")
+    dur_units = lowercase(replace("$(T)", "Dates." => ""))  # Dates.Day => day
+    durcol = Symbol("duration_$(dur_units)s")
     result[!, durcol] = Vector{Int}(undef, n)
     for (chainid, v) in chainid2name_duration
         i += 1
