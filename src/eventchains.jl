@@ -32,7 +32,7 @@ function construct_event_chains(configfile::String)
     chainid2name_duration = append_chainid!(links, cfg)  # chainid => (name, duration)
 
     @info "$(now()) Constructing event chain definitions"
-    x = sort!([(ChainId=k, ChainName=v[1], ChainDuration=v[2]) for (k,v) in chainid2name_duration], by=(x) -> x.ChainId)
+    x = construct_event_chain_definitions(chainid2name_duration, typeof(cfg.max_time_between_events))
 
     @info "$(now()) Exporting event chain definitions"
     CSV.write(joinpath(outdir, "output", "event_chain_definitions.tsv"), x;delim='\t')
@@ -130,6 +130,7 @@ function append_chainid!(links, cfg)
     maxgap        = cfg.max_time_between_events
     chainid       = UInt(0)
     prev_entityid = UInt(0)
+    T = typeof(cfg.max_time_between_events)
     for i = 1:n
         entityid = links[i, :EntityId]
         eventtag = "$(links[i, :TableName]).$(links[i, :EventTag])"
@@ -146,7 +147,8 @@ function append_chainid!(links, cfg)
                 cid = links[i - 1, :ChainId]
                 nm, dur = result[cid]
                 nm      = "$(nm) -> $(eventtag)"
-                dur    += gap.value
+                gapdur  = convert(T, gap)  # Convert from milliseconds to typeof(cfg.max_time_between_events)
+                dur    += gapdur.value
                 links[i, :ChainId] = cid
                 result[cid] = (nm, dur)
             else              # Event is the start of a new chain
@@ -171,6 +173,21 @@ function construct_eventid2dttm_tag(cfg, tablename::String)
         result[eventid] = (dttm, tag)
     end
     result
+end
+
+function construct_event_chain_definitions(chainid2name_duration, T)
+    n = length(chainid2name_duration)
+    i = 0
+    result = DataFrame(ChainId=Vector{UInt}(undef, n), ChainName=Vector{String}(undef, n))
+    durcol = Symbol("duration_$(lowercase("$(T)"))s")
+    result[!, durcol] = Vector{Int}(undef, n)
+    for (chainid, v) in chainid2name_duration
+        i += 1
+        result[i, :ChainId]   = chainid
+        result[i, :ChainName] = v[1]
+        result[i, durcol]     = v[2]
+    end
+    sort!(result, (:ChainId,))
 end
 
 end

@@ -19,4 +19,4 @@ end
 # Test sets
 cleanup(outdir)
 include("test_eventchains.jl")
-#cleanup(somedir)
+cleanup(outdir)
