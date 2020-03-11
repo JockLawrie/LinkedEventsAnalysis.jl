@@ -2,6 +2,12 @@
 linkedtestdir = normpath(joinpath(dirname(pathof(LinkedEventsAnalysis)), "..", "test"))     # /path/to/LinkedEventsAnalysis.jl/test
 spinetestdir  = normpath(joinpath(dirname(pathof(SpineBasedRecordLinkage)), "..", "test"))  # /path/to/SpineBasedRecordLinkage.jl/test
 
+# Set outdir for linkage
+if !isdir(joinpath(spinetestdir, "output"))
+    mkdir(joinpath(spinetestdir, "output"))
+end
+cleanup(joinpath(spinetestdir, "output"))
+
 # Run linkage
 cd(spinetestdir)
 outdir1a = run_linkage(joinpath(spinetestdir, "config", "link_all_health_service_events.yml"))
