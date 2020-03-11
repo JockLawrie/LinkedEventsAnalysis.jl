@@ -7,18 +7,16 @@ using SpineBasedRecordLinkage
 
 const outdir = joinpath(pwd(), "output")  # NOTE: pwd() is /path/to/LinkedEventAnalysis.jl/test/
 
-if !isdir(outdir)
-    mkdir(outdir)
-end
+!isdir(outdir) && mkdir(outdir)
 
-function cleanup()
-    contents = readdir(outdir)
+function cleanup(somedir::String)
+    contents = readdir(somedir)
     for x in contents
-        rm(joinpath(outdir, x); recursive=true)
+        rm(joinpath(somedir, x); recursive=true)
     end
 end
 
 # Test sets
-cleanup()
+cleanup(outdir)
 include("test_eventchains.jl")
-#cleanup()
+#cleanup(somedir)

@@ -1,7 +1,7 @@
 projectname: event-chains
 description: For each person, construct chains of events with no more than 30 days between events in each chain.
 output_directory: "output"          # All output will be stored in output/eventchains-{projectname}-{timestamp}
-links_table: "output/links.csv"     # Table that contains columns EventId and EntityId
+links_table: "output/links.tsv"     # Table that contains columns EventId and EntityId
 event_tables:  # Tables that contain an EventId column
     influenza_cases:         "output/influenza_cases.csv"
     hospital_admissions:     "output/hospital_admissions.csv"

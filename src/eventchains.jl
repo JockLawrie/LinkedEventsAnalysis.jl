@@ -20,8 +20,9 @@ function construct_event_chains(configfile::String)
     cp(configfile, joinpath(outdir, "input", basename(configfile)))  # Copy config file to d/input
 
     @info "$(now()) Importing the links table"
-    types = Dict(:TableName => String, :EntityId => UInt, :EventId => UInt, :CriteriaId => Int)
-    links = DataFrame(CSV.File(cfg.links_table; types=types))
+    links = DataFrame(CSV.File(cfg.links_table))
+    links[:, :EntityId] = UInt.(links[!, :EntityId])
+    links[:, :EventId]  = UInt.(links[!, :EventId])
     select!(links, Not(:CriteriaId))  # Drop CriteriaId column
 
     @info "$(now()) Appending DateTime and EventTag to links table"
@@ -34,11 +35,11 @@ function construct_event_chains(configfile::String)
     x = sort!([(ChainId=k, ChainName=v[1], ChainDuration=v[2]) for (k,v) in chainid2name_duration], by=(x) -> x.ChainId)
 
     @info "$(now()) Exporting event chain definitions"
-    CSV.write(joinpath(outdir, "output", "event_chain_definitions.tsv"), x)
+    CSV.write(joinpath(outdir, "output", "event_chain_definitions.tsv"), x;delim='\t')
 
     @info "$(now()) Exporting event chains"
     x = view(links, :, [:ChainId, :EventId])
-    CSV.write(joinpath(outdir, "output", "event_chains.tsv"), x)
+    CSV.write(joinpath(outdir, "output", "event_chains.tsv"), x; delim='\t')
 
     @info "$(now()) Finished constructing event chains. Results are stored at:\n    $(outdir)"
     outdir
@@ -73,18 +74,28 @@ function ChainsConfig(d::Dict)
     dttm         = replace(dttm, "-" => ".")
     dttm         = replace(dttm, ":" => ".")
     outdir       = joinpath(d["output_directory"], "eventchains-$(projectname)-$(dttm)")
-    links_table  = d["links_table"]
-    event_tables = d["event_tables"]
+    links_table  = correctpath(d["links_table"])
+    event_tables = Dict{String, String}(k => correctpath(v) for (k, v) in d["event_tables"])
     tags         = Dict{String, Symbol}(tablename => Symbol(tag) for (tablename,tag) in d["tags"])
     timestamps   = Dict{String, Symbol}(tablename => Symbol(tag) for (tablename,tag) in d["timestamps"])
-    gap    = d["criteria"]["time_window"]  # Example: "30 days"
-    idx    = findfirst(==(" "), gap)
+    gap          = d["max_time_between_events"]  # Example: "30 days"
+    idx          = findfirst(==(' '), gap)
     isnothing(idx) && error("Max time between events is mis-specified. Format should be \"\$n \$units\". E.g., \"30 days\".")
-    T = registered_units[lowercase(gap[(idx+1):(idx+3)])]
-    n = parse(Int, gap[1:(idx-1)])
+    T      = registered_units[lowercase(gap[(idx+1):(idx+3)])]
+    n      = parse(Int, gap[1:(idx-1)])
     maxgap = T(n)  # Example: Day(30)
     n <= 0 && error("The maximum time between events must be greater than 0 $(T)s.")
     ChainsConfig(projectname, description, outdir, links_table, event_tables, tags, timestamps, maxgap)
+end
+
+"Returns path, corrected for the operating system"
+function correctpath(path::String)
+    ispath(path) && return path  # Already correct
+    path_is_unixlike = !isnothing(findfirst(==('/'), path))
+    sep = path_is_unixlike ? '/' : '\\'
+    components = split(path, sep)
+    Sys.iswindows() && return join(components, '\\')
+    join(components, '/')
 end
 
 ################################################################################
@@ -94,6 +105,7 @@ function append_tag_and_dttm!(links::DataFrame, cfg::ChainsConfig)
     links[!, :DateTime] = missings(DateTime, n)
     links[!, :EventTag] = missings(String,   n)
     tablename = ""
+    eventid2dttm_tag = nothing
     for i = 1:n
         # Update table if necessary
         new_tablename = links[i, :TableName]
@@ -115,6 +127,7 @@ function append_chainid!(links, cfg)
     n = size(links, 1)
     links[!, :ChainId]       = missings(UInt, n)
     links[!, :ChainDuration] = missings(Int,  n)
+    maxgap        = cfg.max_time_between_events
     chainid       = UInt(0)
     prev_entityid = UInt(0)
     for i = 1:n
@@ -129,12 +142,11 @@ function append_chainid!(links, cfg)
             dttm = links[i, :DateTime]
             dttm_prev = links[i - 1, :DateTime]
             gap = dttm - dttm_prev  # gap isa T <: Period
-            gap = gap.value         # gap isa Int
             if gap <= maxgap  # Event is in the same chain as the previous row
                 cid = links[i - 1, :ChainId]
                 nm, dur = result[cid]
                 nm      = "$(nm) -> $(eventtag)"
-                dur    += gap
+                dur    += gap.value
                 links[i, :ChainId] = cid
                 result[cid] = (nm, dur)
             else              # Event is the start of a new chain
@@ -152,7 +164,8 @@ function construct_eventid2dttm_tag(cfg, tablename::String)
     dttm_colname = cfg.timestamps[tablename]
     tag_colname  = cfg.tags[tablename]
     for row in CSV.Rows(cfg.event_tables[tablename]; use_mmap=true, reusebuffer=true)
-        eventid = parse(UInt, getproperty(row, :EventId))
+        eventid = parse(Float64, getproperty(row, :EventId))  # Example: "1.23456789" -> 1.23456789
+        eventid = convert(UInt, eventid)
         dttm    = DateTime(getproperty(row, dttm_colname))
         tag     = getproperty(row, tag_colname)
         result[eventid] = (dttm, tag)
