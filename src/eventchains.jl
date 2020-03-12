@@ -115,7 +115,9 @@ function append_tag_and_dttm!(links::DataFrame, cfg::ChainsConfig)
         end
 
         # Populate new columns of links table
-        dttm, tag = eventid2dttm_tag[links[i, :EventId]]
+        eventid = links[i, :EventId]
+        !haskey(eventid2dttm_tag, eventid) && continue
+        dttm, tag = eventid2dttm_tag[eventid]
         links[i, :DateTime] = dttm
         links[i, :EventTag] = tag
     end
@@ -141,6 +143,7 @@ function append_chainid!(links, cfg)
             links[i, :ChainId] = chainid
         else
             dttm = links[i, :DateTime]
+            ismissing(dttm) && continue
             dttm_prev = links[i - 1, :DateTime]
             gap = dttm - dttm_prev  # gap isa T <: Period
             if gap <= maxgap  # Event is in the same chain as the previous row
@@ -162,13 +165,14 @@ function append_chainid!(links, cfg)
 end
 
 function construct_eventid2dttm_tag(cfg, tablename::String)
-    result       = Dict{UInt, Tuple{DateTime, String}}()
+    result       = Dict{UInt, Tuple{Union{Missing,DateTime}, Union{Missing,String}}}()
     dttm_colname = cfg.timestamps[tablename]
     tag_colname  = cfg.tags[tablename]
     for row in CSV.Rows(cfg.event_tables[tablename]; use_mmap=true, reusebuffer=true)
         eventid = parse(Float64, getproperty(row, :EventId))  # Example: "1.23456789" -> 1.23456789
         eventid = convert(UInt, eventid)
-        dttm    = DateTime(getproperty(row, dttm_colname))
+        dttm    = getproperty(row, dttm_colname)
+        dttm    = ismissing(dttm) ? missing : DateTime(dttm)
         tag     = getproperty(row, tag_colname)
         result[eventid] = (dttm, tag)
     end
