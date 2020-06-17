@@ -9,9 +9,9 @@ using SpineBasedRecordLinkage
 # Functions
 
 function empty_directory!(somedir::String)  # Empty directory but do not delete it
-    contents = readdir(somedir)
+    contents = readdir(somedir; join=true)
     for x in contents
-        rm(joinpath(somedir, x); recursive=true)
+        rm(x; recursive=true)
     end
 end
 
@@ -51,5 +51,5 @@ end
 # Test sets
 empty_directory!(joinpath(lea_testdir, "output"))
 include("test_eventchains.jl")
-#remove_newdirs!(newdirs)
-#remove_newfiles!(newfiles)
+remove_newdirs!(newdirs)
+remove_newfiles!(newfiles)

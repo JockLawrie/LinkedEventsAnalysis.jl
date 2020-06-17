@@ -1,17 +1,13 @@
-projectname: event-chains
+projectname: eventchains
 description: For each person, construct chains of events with no more than 30 days between events in each chain.
-output_directory: "output"          # All output will be stored in output/eventchains-{projectname}-{timestamp}
-links_table: "output/links.tsv"     # Table that contains columns EventId and EntityId
-event_tables:  # Tables that contain an EventId column
-    influenza_cases:         "output/influenza_cases.csv"
-    hospital_admissions:     "output/hospital_admissions.csv"
-    emergency_presentations: "output/emergency_presentations.csv"
-tags:          # For each events table, specify a column that defines tags. This enables us to easily understand the type of event.
-    influenza_cases:         diagnosis   # table_name: column_name
-    hospital_admissions:     primary_diagnosis
-    emergency_presentations: primary_diagnosis
-timestamps:    # For each events table, specify a column that defines the event's time stamp.
-    influenza_cases:         reportdate  # table_name: column_name
-    hospital_admissions:     admissiondate
-    emergency_presentations: presentationdate
 max_time_between_events: "30 days"  # Maximum allowable gap within an event chain. Events separated by more than this are in different chains.
+output_directory: "output"          # All output will be stored in output/eventchains-{projectname}-{timestamp}
+linkagedir: "output/testlinkage"    # The output directory resulting from SpineBasedRecordLinkage.run_linkage. Enables events (see below) to be linked to people.
+event_tables:
+    # tablename: {datafile:   File containing the data of interest. Must have a primary key that matches that used during linkage.
+    #             schemafile: File containing the table's schema.
+    #             tagcolumn:  The column containing a brief description of each event. This enables us to easily understand the type of event.
+    #             timestamp:  The column containing each event's Date or DateTime}
+    influenza_cases:         {datafile: "data/influenza_cases.csv",         schemafile: "schema/influenza_cases.yml",         tagcolumn: diagnosis,         timestamp: reportdate}
+    hospital_admissions:     {datafile: "data/hospital_admissions.csv",     schemafile: "schema/hospital_admissions.yml",     tagcolumn: primary_diagnosis, timestamp: admissiondate}
+    emergency_presentations: {datafile: "data/emergency_presentations.csv", schemafile: "schema/emergency_presentations.yml", tagcolumn: primary_diagnosis, timestamp: presentationdate}
